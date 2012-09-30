@@ -1,18 +1,19 @@
 /* Name: main.c
- * Project: USBaspLoader
- * Author: Christian Starkjohann
+ * Project: Micronucleus
+ * Author: Jenna Fox
  * Creation Date: 2007-12-08
  * Tabsize: 4
- * Copyright: (c) 2007 by OBJECTIVE DEVELOPMENT Software GmbH
- * Portions Copyright: (c) 2012 Louis Beaudoin
+ * Copyright: (c) 2012 Jenna Fox
+ * Portions Copyright: (c) 2007 by OBJECTIVE DEVELOPMENT Software GmbH (USBaspLoader)
+ * Portions Copyright: (c) 2012 Louis Beaudoin (USBaspLoader-tiny85)
  * License: GNU GPL v2 (see License.txt)
- * This Revision: $Id: main.c 786 2010-05-30 20:41:40Z cs $
  */
  
-#define UBOOT_VERSION 2
+#define MICRONUCLEUS_VERSION_MAJOR 1
+#define MICRONUCLEUS_VERSION_MINOR 3
 // how many milliseconds should host wait till it sends another erase or write?
 // needs to be above 4.5 (and a whole integer) as avr freezes for 4.5ms
-#define UBOOT_WRITE_SLEEP 8
+#define MICRONUCLEUS_WRITE_SLEEP 8
 
 
 #include <avr/io.h>
@@ -69,7 +70,7 @@ static void leaveBootloader() __attribute__((__noreturn__));
 //////// Stuff Bluebie Added
 // postscript are the few bytes at the end of programmable memory which store tinyVectors
 // and used to in USBaspLoader-tiny85 store the checksum iirc
-#define POSTSCRIPT_SIZE 6 /* maybe it could be 4 now we do not have checksums? */
+#define POSTSCRIPT_SIZE 4
 #define PROGMEM_SIZE (BOOTLOADER_ADDRESS - POSTSCRIPT_SIZE) /* max size of user program */
 
 // verify the bootloader address aligns with page size
@@ -81,7 +82,7 @@ static void leaveBootloader() __attribute__((__noreturn__));
 static uchar events = 0; // bitmap of events to run
 #define EVENT_ERASE_APPLICATION 1
 #define EVENT_WRITE_PAGE 2
-#define EVENT_FINISH 4
+#define EVENT_EXECUTE 4
 
 // controls state of events
 #define fireEvent(event) events |= (event)
@@ -89,7 +90,7 @@ static uchar events = 0; // bitmap of events to run
 #define clearEvents()    events = 0
 
 // length of bytes to write in to flash memory in upcomming usbFunctionWrite calls
-static unsigned char writeLength;
+//static unsigned char writeLength;
 
 // becomes 1 when some programming happened
 // lets leaveBootloader know if needs to finish up the programming
@@ -114,7 +115,7 @@ static uchar usbFunctionWrite(uchar *data, uchar length);
 static inline void initForUsbConnectivity(void);
 static inline void tiny85FlashInit(void);
 static inline void tiny85FlashWrites(void);
-static inline void tiny85FinishWriting(void);
+//static inline void tiny85FinishWriting(void);
 static inline __attribute__((noreturn)) void leaveBootloader(void);
 
 // erase any existing application and write in jumps for usb interrupt and reset to bootloader
@@ -202,12 +203,17 @@ static void writeWordToPageBuffer(uint16_t data) {
 
 // fills the rest of this page with vectors - interrupt vector or tinyvector tables where needed
 static void fillFlashWithVectors(void) {
-    int16_t i;
-
+    //int16_t i;
+    //
     // fill all or remainder of page with 0xFFFF (as if unprogrammed)
-    for (i = currentAddress % SPM_PAGESIZE; i < SPM_PAGESIZE; i += 2) {
-        writeWordToPageBuffer(0xFFFF); // is where vector tables are sorted out
-    }
+    //for (i = currentAddress % SPM_PAGESIZE; i < SPM_PAGESIZE; i += 2) {
+    //    writeWordToPageBuffer(0xFFFF); // is where vector tables are sorted out
+    //}
+    
+    // TODO: Or more simply: 
+    do {
+        writeWordToPageBuffer(0xFFFF);
+    } while (currentAddress % SPM_PAGESIZE);
 
     writeFlashPage();
 }
@@ -220,7 +226,7 @@ static uchar usbFunctionSetup(uchar data[8]) {
         (((uint)PROGMEM_SIZE) >> 8) & 0xff,
         ((uint)PROGMEM_SIZE) & 0xff,
         SPM_PAGESIZE,
-        UBOOT_WRITE_SLEEP
+        MICRONUCLEUS_WRITE_SLEEP
     };
     
     if (rq->bRequest == 0) { // get device info
@@ -228,7 +234,7 @@ static uchar usbFunctionSetup(uchar data[8]) {
         return 4;
         
     } else if (rq->bRequest == 1) { // write page
-        writeLength = rq->wValue.word;
+        //writeLength = rq->wValue.word;
         currentAddress = rq->wIndex.word;
         
         return USB_NO_MSG; // hands off work to usbFunctionWrite
@@ -238,7 +244,7 @@ static uchar usbFunctionSetup(uchar data[8]) {
         
     } else { // exit bootloader
 #       if BOOTLOADER_CAN_EXIT
-            fireEvent(EVENT_FINISH);
+            fireEvent(EVENT_EXECUTE);
 #       endif
     }
     
@@ -249,7 +255,7 @@ static uchar usbFunctionSetup(uchar data[8]) {
 // read in a page over usb, and write it in to the flash write buffer
 static uchar usbFunctionWrite(uchar *data, uchar length) {
     //if (length > writeLength) length = writeLength; // test for missing final page bug
-    writeLength -= length;
+    //writeLength -= length;
     
     do {
         // remember vectors or the tinyvector table 
@@ -262,8 +268,8 @@ static uchar usbFunctionWrite(uchar *data, uchar length) {
         }
         
         // make sure we don't write over the bootloader!
-        if (currentAddress >= PROGMEM_SIZE) {
-            __boot_page_fill_clear();
+        if (currentAddress >= BOOTLOADER_ADDRESS) {
+            //__boot_page_fill_clear();
             break;
         }
         
@@ -272,9 +278,9 @@ static uchar usbFunctionWrite(uchar *data, uchar length) {
         length -= 2;
     } while(length);
     
-    // TODO: Isn't this always last?
     // if we have now reached another page boundary, we're done
-    uchar isLast = (writeLength == 0);
+    //uchar isLast = (writeLength == 0);
+    uchar isLast = ((currentAddress % SPM_PAGESIZE) == 0);
     // definitely need this if! seems usbFunctionWrite gets called again in future usbPoll's in the runloop!
     if (isLast) fireEvent(EVENT_WRITE_PAGE); // ask runloop to write our page
     
@@ -322,6 +328,7 @@ static inline void tiny85FlashWrites(void) {
     _delay_us(2000); // TODO: why is this here? - it just adds pointless two level deep loops seems like?
     // write page to flash, interrupts will be disabled for > 4.5ms including erase
     
+    // TODO: Do we need this? Wouldn't the programmer always send full sized pages?
     if (currentAddress % SPM_PAGESIZE) { // when we aren't perfectly aligned to a flash page boundary
         fillFlashWithVectors(); // fill up the rest of the page with 0xFFFF (unprogrammed) bits
     } else {
@@ -331,17 +338,19 @@ static inline void tiny85FlashWrites(void) {
 
 // finishes up writing to the flash, including adding the tinyVector tables at the end of memory
 // TODO: can this be simplified? EG: currentAddress = PROGMEM_SIZE; fillFlashWithVectors();
-static inline void tiny85FinishWriting(void) {
-    // make sure remainder of flash is erased and write checksum and application reset vectors
-    if (didWriteSomething) {
-        while (currentAddress < BOOTLOADER_ADDRESS) {
-            fillFlashWithVectors();
-        }
-    }
-}
+// static inline void tiny85FinishWriting(void) {
+//     // make sure remainder of flash is erased and write checksum and application reset vectors
+//     if (didWriteSomething) {
+//         while (currentAddress < BOOTLOADER_ADDRESS) {
+//             fillFlashWithVectors();
+//         }
+//     }
+// }
 
 // reset system to a normal state and launch user program
 static inline __attribute__((noreturn)) void leaveBootloader(void) {
+    _delay_ms(10); // removing delay causes USB errors
+    
     //DBG1(0x01, 0, 0);
     bootLoaderExit();
     cli();
@@ -379,26 +388,16 @@ int __attribute__((noreturn)) main(void) {
             // needs to wait > 9ms before next usb request
             if (isEvent(EVENT_ERASE_APPLICATION)) eraseApplication();
             if (isEvent(EVENT_WRITE_PAGE)) tiny85FlashWrites();
-            
-            if (isEvent(EVENT_FINISH)) { // || AUTO_EXIT_CONDITION()) {
-                tiny85FinishWriting();
-                
-#               if BOOTLOADER_CAN_EXIT
-                    _delay_ms(10); // removing delay causes USB errors
+
+#           if BOOTLOADER_CAN_EXIT            
+                if (isEvent(EVENT_EXECUTE)) { // when host requests device run uploaded program
                     break;
-#               endif
-            }
-// #           if BOOTLOADER_CAN_EXIT
-//                 // exit if requested by the programming app, or if we timeout waiting for the pc with a valid app
-//                 if (isEvent(EVENT_EXIT_BOOTLOADER) || AUTO_EXIT_CONDITION()) {
-//                     //_delay_ms(10);
-//                     break;
-//                 }
-// #           endif
+                }
+#           endif
             
             clearEvents();
             
-        } while(bootLoaderCondition());  /* main event loop */
+        } while(bootLoaderCondition());  /* main event loop runs so long as bootLoaderCondition remains truthy */
     }
     
     leaveBootloader();
