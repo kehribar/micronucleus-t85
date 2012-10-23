@@ -10,10 +10,10 @@
  */
  
 #define MICRONUCLEUS_VERSION_MAJOR 1
-#define MICRONUCLEUS_VERSION_MINOR 3
+#define MICRONUCLEUS_VERSION_MINOR 4
 // how many milliseconds should host wait till it sends another erase or write?
 // needs to be above 4.5 (and a whole integer) as avr freezes for 4.5ms
-#define MICRONUCLEUS_WRITE_SLEEP 8
+#define MICRONUCLEUS_WRITE_SLEEP 6
 
 
 #include <avr/io.h>
@@ -78,6 +78,13 @@ static void leaveBootloader() __attribute__((__noreturn__));
 #  error "BOOTLOADER_ADDRESS in makefile must be a multiple of chip's pagesize"
 #endif
 
+#ifdef AUTO_EXIT_MS
+#  if AUTO_EXIT_MS < (MICRONUCLEUS_WRITE_SLEEP * (BOOTLOADER_ADDRESS / SPM_PAGESIZE))
+#    warning "AUTO_EXIT_MS is shorter than the time it takes to perform erase function - might affect reliability?"
+#    warning "Try increasing AUTO_EXIT_MS if you have stability problems"
+#  endif
+#endif
+
 // events system schedules functions to run in the main loop
 static uchar events = 0; // bitmap of events to run
 #define EVENT_ERASE_APPLICATION 1
@@ -96,8 +103,7 @@ static uchar events = 0; // bitmap of events to run
 // lets leaveBootloader know if needs to finish up the programming
 static uchar didWriteSomething = 0;
 
-
-
+uint16_t idlePolls = 0; // how long have we been idle?
 
 
 
@@ -116,7 +122,7 @@ static inline void initForUsbConnectivity(void);
 static inline void tiny85FlashInit(void);
 static inline void tiny85FlashWrites(void);
 //static inline void tiny85FinishWriting(void);
-static inline __attribute__((noreturn)) void leaveBootloader(void);
+static inline void leaveBootloader(void);
 
 // erase any existing application and write in jumps for usb interrupt and reset to bootloader
 //  - Because flash can be erased once and programmed several times, we can write the bootloader
@@ -222,6 +228,8 @@ static void fillFlashWithVectors(void) {
 
 static uchar usbFunctionSetup(uchar data[8]) {
     usbRequest_t *rq = (void *)data;
+    idlePolls = 0; // reset idle polls when we get usb traffic
+    
     static uchar replyBuffer[4] = {
         (((uint)PROGMEM_SIZE) >> 8) & 0xff,
         ((uint)PROGMEM_SIZE) & 0xff,
@@ -348,7 +356,7 @@ static inline void tiny85FlashWrites(void) {
 // }
 
 // reset system to a normal state and launch user program
-static inline __attribute__((noreturn)) void leaveBootloader(void) {
+static inline void leaveBootloader(void) {
     _delay_ms(10); // removing delay causes USB errors
     
     //DBG1(0x01, 0, 0);
@@ -366,22 +374,32 @@ static inline __attribute__((noreturn)) void leaveBootloader(void) {
 }
 
 int __attribute__((noreturn)) main(void) {
-    uint16_t idlePolls = 0;
-
     /* initialize  */
+    #ifdef RESTORE_OSCCAL
+        uint8_t osccal_default = OSCCAL;
+    #endif
+    #if (!SET_CLOCK_PRESCALER) && LOW_POWER_MODE
+        uint8_t prescaler_default = CLKPR;
+    #endif
+    
     wdt_disable();      /* main app may have enabled watchdog */
     tiny85FlashInit();
     bootLoaderInit();
     
     
-    if (bootLoaderCondition()) {
+    if (bootLoaderStartCondition()) {
+        #if LOW_POWER_MODE
+            // turn off clock prescalling - chip must run at full speed for usb
+            // if you might run chip at lower voltages, detect that in bootLoaderStartCondition
+            CLKPR = 1 << CLKPCE;
+            CLKPR = 0;
+        #endif
+        
         initForUsbConnectivity();
         do {
             usbPoll();
             _delay_us(100);
             idlePolls++;
-            
-            if (events) idlePolls = 0;
             
             // these next two freeze the chip for ~ 4.5ms, breaking usb protocol
             // and usually both of these will activate in the same loop, so host
@@ -400,6 +418,21 @@ int __attribute__((noreturn)) main(void) {
         } while(bootLoaderCondition());  /* main event loop runs so long as bootLoaderCondition remains truthy */
     }
     
+    // set clock prescaler to desired clock speed (changing from clkdiv8, or no division, depending on fuses)
+    #if LOW_POWER_MODE
+        #ifdef SET_CLOCK_PRESCALER
+            CLKPR = 1 << CLKPCE;
+            CLKPR = SET_CLOCK_PRESCALER;
+        #else
+            CLKPR = 1 << CLKPCE;
+            CLKPR = prescaler_default;
+        #endif
+    #endif
+    
+    // slowly bring down OSCCAL to it's original value before launching in to user program
+    #ifdef RESTORE_OSCCAL
+        while (OSCCAL > osccal_default) { OSCCAL -= 1; }
+    #endif
     leaveBootloader();
 }
 
