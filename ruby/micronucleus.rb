@@ -127,11 +127,15 @@ class HexProgram
   end
 
   def binary
+    bytes.pack('C*')
+  end
+  
+  def bytes
     highest_address = @bytes.keys.max
-
-    bytestring = Array.new(highest_address + 1) { |index|
+    
+    bytes = Array.new(highest_address + 1) { |index|
       @bytes[index]
-    }.pack('C*')
+    }
   end
 
   protected
@@ -143,7 +147,7 @@ class HexProgram
       length = line[1..2].to_i(16) # usually 16 or 32
       address = line[3..6].to_i(16) # 16-bit start address
       record_type = line[7..8].to_i(16)
-      data = line[9.. 9 + (length * 2)]
+      data = line[9... 9 + (length * 2)]
       checksum = line[9 + (length * 2).. 10 + (length * 2)].to_i(16)
       checksum_section = line[1...9 + (length * 2)]
 
@@ -153,7 +157,7 @@ class HexProgram
 
       checksum_calculated = (((checksum_calculated % 256) ^ 0xFF) + 1) % 256
 
-      raise "Hex file checksum mismatch @ #{line}" unless checksum == checksum_calculated
+      raise "Hex file checksum mismatch @ #{line} should be #{checksum_calculated.to_s(16)}" unless checksum == checksum_calculated
 
       if record_type == 0 # data record
         data_bytes = data.chars.each_slice(2).map { |slice| slice.join('').to_i(16) }
